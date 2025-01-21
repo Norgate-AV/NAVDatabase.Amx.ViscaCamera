@@ -1,11 +1,16 @@
 MODULE_NAME='mViscaCamera'      (
                                     dev vdvObject,
-                                    dev vdvControl
+                                    dev vdvCommObject
                                 )
 
 (***********************************************************)
+#DEFINE USING_NAV_MODULE_BASE_CALLBACKS
+#DEFINE USING_NAV_MODULE_BASE_PROPERTY_EVENT_CALLBACK
+#DEFINE USING_NAV_STRING_GATHER_CALLBACK
 #include 'NAVFoundation.ModuleBase.axi'
 #include 'NAVFoundation.ArrayUtils.axi'
+#include 'NAVFoundation.InterModuleApi.axi'
+#include 'LibVisca.axi'
 
 /*
  _   _                       _          ___     __
@@ -47,18 +52,21 @@ DEFINE_DEVICE
 (*               CONSTANT DEFINITIONS GO BELOW             *)
 (***********************************************************)
 DEFINE_CONSTANT
+
 constant long TL_DRIVE = 1
 
-constant integer REQUIRED_POWER_ON    = 1
-constant integer REQUIRED_POWER_OFF    = 2
+constant long TL_DRIVE_INTERVAL[] = { 500 }
 
-constant integer ACTUAL_POWER_ON    = 1
-constant integer ACTUAL_POWER_OFF    = 2
+constant integer REQUIRED_POWER_ON      = 1
+constant integer REQUIRED_POWER_OFF     = 2
 
+constant integer ACTUAL_POWER_ON        = 1
+constant integer ACTUAL_POWER_OFF       = 2
 
-constant integer GET_POWER = 1
+constant integer GET_POWER  = 1
 constant integer GET_PAN    = 2
-constant integer GET_ZOOM    = 3
+constant integer GET_ZOOM   = 3
+
 
 (***********************************************************)
 (*              DATA TYPE DEFINITIONS GO BELOW             *)
@@ -69,34 +77,26 @@ DEFINE_TYPE
 (*               VARIABLE DEFINITIONS GO BELOW             *)
 (***********************************************************)
 DEFINE_VARIABLE
-volatile long ltDrive[] = { 500 }
-volatile integer iLoop
 
-volatile char cUnitID[]    = '1'
+volatile integer loop
 
-volatile integer iIsInitialized
+volatile integer commandLockOut
 
-volatile integer iID
+volatile integer requiredPower
+volatile integer actualPower
 
-volatile integer iSemaphore
-volatile char cRxBuffer[NAV_MAX_BUFFER]
+volatile integer pollSequence = GET_POWER
 
-volatile integer iCommandLockOut
+volatile integer tiltSpeed      = 5
+volatile integer panSpeed       = 5
+volatile integer zoomSpeed      = 2
 
-volatile integer iRequiredPower
-volatile integer iActualPower
+volatile integer lastPTZ
 
-volatile integer iPollSequence = GET_POWER
+volatile _ViscaObject object
 
-volatile integer iCommunicating
-
-
-volatile integer iTiltSpeed    = 5
-volatile integer iPanSpeed    = 5
-volatile integer iZoomSpeed    = 2
-
-
-volatile integer iLastPTZ
+volatile integer registerReady
+volatile integer registerRequested
 
 (***********************************************************)
 (*               LATCHING DEFINITIONS GO BELOW             *)
@@ -113,199 +113,278 @@ DEFINE_MUTUALLY_EXCLUSIVE
 (***********************************************************)
 (* EXAMPLE: DEFINE_FUNCTION <RETURN_TYPE> <NAME> (<PARAMETERS>) *)
 (* EXAMPLE: DEFINE_CALL '<NAME>' (<PARAMETERS>) *)
-define_function SendCommand(char cParam[]) {
-    NAVLog("'Command to ',NAVStringSurroundWith(NAVDeviceToString(vdvControl), '[', ']'),': [',cParam,']'")
-    send_command vdvControl,"cParam"
-}
 
-define_function BuildCommand(char cHeader[], char cCmd[]) {
-    if (length_array(cCmd)) {
-    SendCommand("cHeader,'-<',itoa(iID),'|',cCmd,'>'")
-    }else {
-    SendCommand("cHeader,'-<',itoa(iID),'>'")
+define_function Register(_ViscaObject object) {
+    stack_var char message[NAV_MAX_BUFFER]
+
+    if (!registerRequested || !registerReady || !object.Api.Id) {
+        return
     }
+
+    message = NAVInterModuleApiBuildObjectMessage(OBJECT_REGISTRATION_MESSAGE_HEADER,
+                                    object.Api.Id,
+                                    '')
+
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'mViscaCamera => ID-', itoa(object.Api.Id), ' Data-', message")
+
+    NAVInterModuleApiSendObjectMessage(vdvCommObject, message)
+
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'mViscaCamera => Object Registering: ID-', itoa(object.Api.Id)")
+
+    object.Api.IsRegistered = true
 }
 
-define_function Process() {
-    stack_var char cTemp[NAV_MAX_BUFFER]
-    iSemaphore = true
-    while (length_array(cRxBuffer) && NAVContains(cRxBuffer,'>')) {
-    cTemp = remove_string(cRxBuffer,"'>'",1)
-    if (length_array(cTemp)) {
-        NAVLog("'Parsing String From ',NAVStringSurroundWith(NAVDeviceToString(vdvControl), '[', ']'),': [',cTemp,']'")
-        if (NAVContains(cRxBuffer, cTemp)) { cRxBuffer = "''" }
-        select {
-        active (NAVStartsWith(cTemp,'REGISTER')): {
-            iID = atoi(NAVGetStringBetween(cTemp,'<','>'))
-            if (iID) { BuildCommand('REGISTER','') }
-            NAVLog("'VISCA_REGISTER_REQUESTED<',itoa(iID),'>'")
-            NAVLog("'VISCA_REGISTER<',itoa(iID),'>'")
+
+#IF_DEFINED USING_NAV_STRING_GATHER_CALLBACK
+define_function NAVStringGatherCallback(_NAVStringGatherResult args) {
+    stack_var integer id
+
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_PARSING_STRING_FROM,
+                                            vdvCommObject,
+                                            args.Data))
+
+    // if (NAVContains(module.RxBuffer.Data, args.Data)) {
+    //     module.RxBuffer.Data = "''"
+    // }
+
+    id = NAVInterModuleApiGetObjectId(args.Data)
+
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                "'mViscaCamera => Object ID-', itoa(id), ' Data-', args.Data");
+
+    select {
+        active (NAVStartsWith(args.Data, OBJECT_REGISTRATION_MESSAGE_HEADER)): {
+            // object.Api.Id = NAVInterModuleApiGetObjectId(args.Data)
+            object.Api.Id = id
+
+            registerRequested = true
+            NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                        "'mViscaCamera => Object Registration Requested: ID-', itoa(object.Api.Id)")
+
+            Register(object)
         }
-        active (NAVStartsWith(cTemp,'INIT')): {
-            //if (cUnitGroup == '*' || cUnitID == '*') {
-            //if (!iIsInitialized) {
-                //iIsInitialized = true
-                //BuildCommand('INIT_DONE','')
-            //}
-           // }else {
-            iIsInitialized = false
-            iPollSequence = GET_POWER
-            GetInitialized()
-            NAVLog("'VISCA_INIT_REQUESTED<',itoa(iID),'>'")
+        active (NAVStartsWith(args.Data, OBJECT_INIT_MESSAGE_HEADER)): {
+            object.Api.IsInitialized = false
+            NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                        "'mViscaCamera => Object Initialization Requested: ID-', itoa(object.Api.Id)")
 
-            //}
+            GetInitialized(object)
+            pollSequence = GET_POWER
         }
-        active (NAVStartsWith(cTemp,'START_POLLING')): {
-            timeline_create(TL_DRIVE,ltDrive,length_array(ltDrive),TIMELINE_ABSOLUTE,TIMELINE_REPEAT)
+        active (NAVStartsWith(args.Data, OBJECT_START_POLLING_MESSAGE_HEADER)): {
+            NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                        "'mViscaCamera => Object Polling Requested: ID-', itoa(object.Api.Id)")
+
+            StartPolling(object)
         }
-        active (NAVStartsWith(cTemp,'RESPONSE_MSG')): {
-            stack_var char cResponseRequestMess[NAV_MAX_BUFFER]
-            stack_var char cResponseMess[NAV_MAX_BUFFER]
-            iCommunicating = true
-            //NAVLog("'RESPONCE_MSG_RECEIVED<',itoa(iID),'>: ',cTemp")
-            TimeOut()
-            cResponseRequestMess = NAVGetStringBetween(cTemp,'<','|')
-            cResponseMess = NAVGetStringBetween(cTemp,'|','>')
-            //NAVLog("'VISCA_GOT_RESPONSE<',itoa(iID),'>','<',cResponseMess,'>'")
-            //BuildCommand('RESPONSE_OK',cResponseRequestMess)
-            select {
-            active (NAVContains(cResponseMess,"atoi(cUnitID) + $8F,$50")): {
-                //NAVLog("'VISCA_GOT_INIT_RESPONSE<',itoa(iID),'>'")
-                remove_string(cResponseMess,"atoi(cUnitID) + $8F,$50",1)
-                switch (iPollSequence) {
-                case GET_POWER: {
-                    switch (cResponseMess[1]) {
-                    case $02: { iActualPower = ACTUAL_POWER_ON }
-                    case $03: { iActualPower = ACTUAL_POWER_OFF }
-                    }
+        active (NAVStartsWith(args.Data, OBJECT_RESPONSE_MESSAGE_HEADER)): {
+            stack_var char response[NAV_MAX_BUFFER]
 
-                    if (!iIsInitialized) {
-                    iIsInitialized = true
-                    BuildCommand('INIT_DONE','')
-                    NAVLog("'VISCA_INIT_DONE<',itoa(iID),'>'")
-                    }
+            response = NAVInterModuleApiGetObjectFullMessage(args.Data)
 
-                    //iPollSequence = GET_PAN
-                }
-                case GET_PAN: {
-                    iPollSequence = GET_ZOOM
-                }
-                case GET_ZOOM: {
-                    /*
-                    if (!iIsInitialized) {
-                    iIsInitialized = true
-                    BuildCommand('INIT_DONE','')
-                    NAVLog("'VISCA_INIT_DONE<',itoa(iID),'>'")
-                    }
-                    */
+            {
+                stack_var char responseRequestMess[NAV_MAX_BUFFER]
+                stack_var char responseMess[NAV_MAX_BUFFER]
 
-                    iPollSequence = GET_POWER
-                }
+                CommunicationTimeOut(30)
+
+                responseRequestMess = NAVGetStringBetween(response, '<', '|')
+                responseMess = NAVGetStringBetween(response, '|', '>')
+
+                select {
+                    active (NAVContains(responseMess, "object.Id + $8F, $50")): {
+                        remove_string(responseMess, "object.Id + $8F, $50", 1)
+
+                        switch (pollSequence) {
+                            case GET_POWER: {
+                                switch (responseMess[1]) {
+                                    case $02: { actualPower = ACTUAL_POWER_ON }
+                                    case $03: { actualPower = ACTUAL_POWER_OFF }
+                                }
+
+                                if (!module.Device.IsInitialized) {
+                                    module.Device.IsInitialized = true
+                                    NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                                        NAVInterModuleApiBuildObjectMessage(OBJECT_INIT_DONE_MESSAGE_HEADER,
+                                                                            object.Api.Id,
+                                                                            ''))
+                                }
+                            }
+                            case GET_PAN: {
+                                pollSequence = GET_POWER
+                            }
+                            case GET_ZOOM: {
+                                pollSequence = GET_POWER
+                            }
+                        }
+                    }
                 }
             }
-            }
-        }
         }
     }
-    }
+}
+#END_IF
 
-    iSemaphore = false
+
+define_function StartPolling(_ViscaObject object) {
+    NAVTimelineStart(TL_DRIVE, TL_DRIVE_INTERVAL, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
 }
 
-define_function GetInitialized() {
-    //NAVLog("'VISCA_GETTING_INITIALIZED<',itoa(iID),'>'")
+
+define_function GetInitialized(_ViscaObject object) {
     SendQuery(GET_POWER)
-    //SendQuery(GET_PAN)
-    //SendQuery(GET_ZOOM)
 }
 
-define_function char[NAV_MAX_BUFFER] BuildString(char cByte1[], char cByte2[], char cByte3[], char cByte4[], char cByte5[], char cByte6[], char cByte7[], char cByte8[]) {
-    stack_var char cTemp[8]
-    if (length_array(cByte1)) { cTemp = "cTemp,cByte1" }
-    if (length_array(cByte2)) { cTemp = "cTemp,cByte2" }
-    if (length_array(cByte3)) { cTemp = "cTemp,cByte3" }
-    if (length_array(cByte4)) { cTemp = "cTemp,cByte4" }
-    if (length_array(cByte5)) { cTemp = "cTemp,cByte5" }
-    if (length_array(cByte6)) { cTemp = "cTemp,cByte6" }
-    if (length_array(cByte7)) { cTemp = "cTemp,cByte7" }
-    if (length_array(cByte8)) { cTemp = "cTemp,cByte8" }
-    return cTemp
-}
 
-define_function SendQuery(integer iParam) {
-    switch (iParam) {
-    case GET_POWER: {
-        BuildCommand('POLL_MSG',BuildString("atoi(cUnitID) + $80","$09","$04","$00",'','','',''))
-        //NAVLog("'VISCA_SENDING_INIT_COMMAND<',itoa(iID),'>'")
-    }
-    case GET_PAN: { BuildCommand('POLL_MSG',BuildString("atoi(cUnitID) + $80","$09","$06","$12",'','','','')) }
-    case GET_ZOOM: { BuildCommand('POLL_MSG',BuildString("atoi(cUnitID) + $80","$09","$04","$47",'','','','')) }
+define_function SendQuery(integer query) {
+    switch (query) {
+        case GET_POWER: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                NAVInterModuleApiBuildObjectMessage(OBJECT_QUERY_MESSAGE_HEADER,
+                                                    object.Api.Id,
+                                                    BuildPayload(object, VISCA_COMMAND_GET, "$04, $00")))
+        }
+        case GET_PAN: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                NAVInterModuleApiBuildObjectMessage(OBJECT_QUERY_MESSAGE_HEADER,
+                                                    object.Api.Id,
+                                                    BuildPayload(object, VISCA_COMMAND_GET, "$06, $12")))
+        }
+        case GET_ZOOM: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                NAVInterModuleApiBuildObjectMessage(OBJECT_QUERY_MESSAGE_HEADER,
+                                                    object.Api.Id,
+                                                    BuildPayload(object, VISCA_COMMAND_GET, "$04, $47")))
+        }
     }
 }
 
-define_function TimeOut() {
+
+define_function CommunicationTimeOut(integer timeOut) {
     cancel_wait 'CommsTimeOut'
-    wait 300 'CommsTimeOut' { iCommunicating = false }
-}
 
-define_function SetPower(integer iParam) {
-    switch (iParam) {
-    case REQUIRED_POWER_ON: { BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$00","$02",'','','')) }
-    case REQUIRED_POWER_OFF: { BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$00","$03",'','','')) }
+    module.Device.IsCommunicating = true
+
+    wait (timeOut * 10) 'CommsTimeOut' {
+        module.Device.IsCommunicating = false
     }
 }
+
+
+define_function SetPower(integer state) {
+    switch (state) {
+        case REQUIRED_POWER_ON: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$04, $00, $02")))
+        }
+        case REQUIRED_POWER_OFF: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$04, $00, $03")))
+        }
+    }
+}
+
 
 define_function Drive() {
-    iLoop++
-    switch (iLoop) {
-    case 1:
-    case 11:
-    case 21:
-    case 31: { SendQuery(iPollSequence); return }
-    case 41: { iLoop = 0; return }
-    default: {
-        if (iCommandLockOut) { return }
-        if (iRequiredPower && (iRequiredPower == iActualPower)) { iRequiredPower = 0; return }
+    loop++
 
-        if (iRequiredPower && (iRequiredPower <> iActualPower) && iCommunicating) {
-        SetPower(iRequiredPower)
-        iCommandLockOut = true
-        wait 150 iCommandLockOut = false
-        iPollSequence = GET_POWER
-        return
+    switch (loop) {
+        case 1:
+        case 11:
+        case 21:
+        case 31: {
+            SendQuery(pollSequence)
+            return
+        }
+        case 41: {
+            loop = 0
+            return
+        }
+        default: {
+            if (commandLockOut) { return }
+
+            if (requiredPower && (requiredPower == actualPower)) { requiredPower = 0; return }
+
+            if (requiredPower && (requiredPower != actualPower) && module.Device.IsCommunicating) {
+                SetPower(requiredPower)
+
+                commandLockOut = true
+                wait 150 commandLockOut = false
+
+                pollSequence = GET_POWER
+
+                return
+            }
         }
     }
+}
+
+
+define_function RecallLastPTZ(integer last) {
+    switch (last) {
+        case 1: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $03, $01")))
+
+        }
+        case 2: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $03, $02")))
+        }
+        case 3: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $01, $03")))
+        }
+        case 4: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $02, $03")))
+        }
+        case 5: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$04, $07, $20 + zoomSpeed")))
+        }
+        case 6: {
+            NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$04, $07, $30 + zoomSpeed")))
+        }
     }
 }
 
-define_function RecallLastPTZ(integer iParam) {
-    switch (iLastPTZ) {
-    case 1: {
-        BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$03","$01"))
-    }
-    case 2: {
-        BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$03","$02"))
-    }
-    case 3: {
-        BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$01","$03"))
-    }
-    case 4: {
-        BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$02","$03"))
-    }
-    case 5: {
-        BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$07","$20 + iZoomSpeed",'','',''))
-    }
-    case 6: {
-        BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$07","$30 + iZoomSpeed",'','',''))
-    }
+
+#IF_DEFINED USING_NAV_MODULE_BASE_PROPERTY_EVENT_CALLBACK
+define_function NAVModulePropertyEventCallback(_NAVModulePropertyEvent event) {
+    switch (upper_string(event.Name)) {
+        case 'UNIT_ID':
+        case 'ID': {
+            object.Id = atoi(NAVTrimString(event.Args[1]))
+        }
     }
 }
+#END_IF
+
 
 (***********************************************************)
 (*                STARTUP CODE GOES BELOW                  *)
 (***********************************************************)
 DEFINE_START {
-    create_buffer vdvControl,cRxBuffer
+    create_buffer vdvCommObject, module.RxBuffer.Data
 
     set_virtual_channel_count(vdvObject, 1024)
     set_virtual_level_count(vdvObject, 30)
@@ -315,145 +394,208 @@ DEFINE_START {
 (*                THE EVENTS GO BELOW                      *)
 (***********************************************************)
 DEFINE_EVENT
-data_event[vdvControl] {
-    online: {
-    }
+
+data_event[vdvCommObject] {
     string: {
-    if (!iSemaphore) {
-        Process()
-    }
+        NAVStringGather(module.RxBuffer, '>')
     }
 }
+
 
 data_event[vdvObject] {
     command: {
-        stack_var char cCmdHeader[NAV_MAX_CHARS]
-    stack_var char cCmdParam[2][NAV_MAX_CHARS]
+        stack_var _NAVSnapiMessage message
 
-    NAVLog("'Command from ',NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'),': [',data.text,']'")
-    cCmdHeader = DuetParseCmdHeader(data.text)
-    cCmdParam[1] = DuetParseCmdParam(data.text)
-    cCmdParam[2] = DuetParseCmdParam(data.text)
-    switch (cCmdHeader) {
-        case 'PROPERTY': {
-        switch (cCmdParam[1]) {
-            case 'UNIT_ID': {
-            cUnitID = cCmdParam[2]
+        NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                    NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_COMMAND_FROM,
+                                                data.device,
+                                                data.text))
+
+        NAVParseSnapiMessage(data.text, message)
+
+        switch (message.Header) {
+            case OBJECT_REGISTRATION_MESSAGE_HEADER: {
+                registerReady = true
+
+                Register(object)
+            }
+            case OBJECT_INIT_MESSAGE_HEADER: {
+                GetInitialized(object)
+            }
+            case 'POWER': {
+                switch (message.Parameter[1]) {
+                    case 'ON': {
+                        requiredPower = REQUIRED_POWER_ON
+                        Drive()
+                    }
+                    case 'OFF': {
+                        requiredPower = REQUIRED_POWER_OFF
+                        Drive()
+                    }
+                }
+            }
+            case 'PRESET': {
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object,
+                                                                    VISCA_COMMAND_SET,
+                                                                    "$04, $3F, $02, atoi(message.Parameter[1]), $FF")))
+            }
+            case 'PRESETSAVE': {
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object,
+                                                                    VISCA_COMMAND_SET,
+                                                                    "$04, $3F, $01, atoi(message.Parameter[1]), $FF")))
             }
         }
-        }
-        case 'POWER': {
-        switch (cCmdParam[1]) {
-            case 'ON': {
-            iRequiredPower = REQUIRED_POWER_ON; Drive()
-            }
-            case 'OFF': {
-            iRequiredPower = REQUIRED_POWER_OFF; Drive()
-            }
-        }
-        }
-        case 'PRESET': {
-        BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$3F","$02","atoi(cCmdParam[1])","$FF",""))
-        }
-        case 'PRESETSAVE': {
-        BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$3F","$01","atoi(cCmdParam[1])","$FF",""))
-        }
-    }
     }
 }
 
-define_event channel_event[vdvObject,0] {
+
+channel_event[vdvObject, 0] {
     on: {
         switch (channel.channel) {
-        case PWR_ON: {
-            iRequiredPower = REQUIRED_POWER_ON; Drive()
-        }
-        case PWR_OFF: {
-            iRequiredPower = REQUIRED_POWER_OFF; Drive()
-        }
-        case TILT_UP: {
-            iLastPTZ = 1
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$03","$01"))
-        }
-        case TILT_DN: {
-            iLastPTZ = 2
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$03","$02"))
-        }
-        case PAN_LT: {
-            iLastPTZ = 3
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$01","$03"))
-        }
-        case PAN_RT: {
-            iLastPTZ = 4
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$02","$03"))
-        }
-        case ZOOM_IN: {
-            iLastPTZ = 5
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$07","$20 + iZoomSpeed",'','',''))
-        }
-        case ZOOM_OUT: {
-            iLastPTZ = 6
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$07","$30 + iZoomSpeed",'','',''))
-        }
-        case NAV_PRESET_1:
-        case NAV_PRESET_2:
-        case NAV_PRESET_3:
-        case NAV_PRESET_4:
-        case NAV_PRESET_5:
-        case NAV_PRESET_6:
-        case NAV_PRESET_7:
-        case NAV_PRESET_8: {
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$3F","$02","NAVFindInArrayINTEGER(NAV_PRESET, channel.channel)","$FF",""))
-        }
+            case PWR_ON: {
+                requiredPower = REQUIRED_POWER_ON
+                Drive()
+            }
+            case PWR_OFF: {
+                requiredPower = REQUIRED_POWER_OFF
+                Drive()
+            }
+            case TILT_UP: {
+                lastPTZ = 1
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $03, $01")))
+            }
+            case TILT_DN: {
+                lastPTZ = 2
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $03, $02")))
+            }
+            case PAN_LT: {
+                lastPTZ = 3
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $01, $03")))
+            }
+            case PAN_RT: {
+                lastPTZ = 4
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $02, $03")))
+            }
+            case ZOOM_IN: {
+                lastPTZ = 5
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$04, $07, $20 + zoomSpeed")))
+            }
+            case ZOOM_OUT: {
+                lastPTZ = 6
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$04, $07, $30 + zoomSpeed")))
+            }
+            case NAV_PRESET_1:
+            case NAV_PRESET_2:
+            case NAV_PRESET_3:
+            case NAV_PRESET_4:
+            case NAV_PRESET_5:
+            case NAV_PRESET_6:
+            case NAV_PRESET_7:
+            case NAV_PRESET_8: {
+                stack_var integer preset
+
+                preset = NAVFindInArrayInteger(NAV_PRESET, channel.channel)
+
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object,
+                                                                    VISCA_COMMAND_SET,
+                                                                    "$04, $3F, $02, preset, $FF")))
+            }
         }
     }
     off: {
         switch (channel.channel) {
-        case TILT_UP:
-        case TILT_DN:
-        case PAN_LT:
-        case PAN_RT: {
-            iLastPTZ = 0
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$06","$01","iTiltSpeed","iPanSpeed","$03","$03"))
-        }
-        case ZOOM_IN:
-        case ZOOM_OUT: {
-            iLastPTZ = 0
-            BuildCommand('COMMAND_MSG',BuildString("atoi(cUnitID) + $80","$01","$04","$07","$00",'','',''))
-        }
+            case TILT_UP:
+            case TILT_DN:
+            case PAN_LT:
+            case PAN_RT: {
+                lastPTZ = 0
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$06, $01, tiltSpeed, panSpeed, $03, $03")))
+            }
+            case ZOOM_IN:
+            case ZOOM_OUT: {
+                lastPTZ = 0
+                NAVInterModuleApiSendObjectMessage(vdvCommObject,
+                                    NAVInterModuleApiBuildObjectMessage(OBJECT_COMMAND_MESSAGE_HEADER,
+                                                        object.Api.Id,
+                                                        BuildPayload(object, VISCA_COMMAND_SET, "$04, $07, $00")))
+            }
         }
     }
 }
 
-level_event[vdvObject,TILT_SPEED_LVL] {
-    iTiltSpeed = level.value
-    NAVLog("'VISCA_TILT_SPEED_CHANGE<',itoa(iID),'>TILT_SPEED<',itoa(iTiltSpeed),'>'")
-    if (iLastPTZ) {
-    RecallLastPTZ(iLastPTZ)
+
+level_event[vdvObject, TILT_SPEED_LVL] {
+    tiltSpeed = level.value
+
+    // NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+    //             "'VISCA_TILT_SPEED_CHANGE<', itoa(iD), '>TILT_SPEED<', itoa(tiltSpeed), '>'")
+
+    if (lastPTZ) {
+        RecallLastPTZ(lastPTZ)
     }
 }
 
-level_event[vdvObject,PAN_SPEED_LVL] {
-    iPanSpeed = level.value
-    NAVLog("'VISCA_PAN_SPEED_CHANGE<',itoa(iID),'>PAN_SPEED<',itoa(iPanSpeed),'>'")
-    if (iLastPTZ) {
-    RecallLastPTZ(iLastPTZ)
+
+level_event[vdvObject, PAN_SPEED_LVL] {
+    panSpeed = level.value
+
+    // NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+    //             "'VISCA_PAN_SPEED_CHANGE<', itoa(iD), '>PAN_SPEED<', itoa(panSpeed), '>'")
+
+    if (lastPTZ) {
+        RecallLastPTZ(lastPTZ)
     }
 }
 
-level_event[vdvObject,ZOOM_SPEED_LVL] {
-    iZoomSpeed = level.value
-    NAVLog("'VISCA_ZOOM_SPEED_CHANGE<',itoa(iID),'>ZOOM_SPEED<',itoa(iZoomSpeed),'>'")
-    if (iLastPTZ) {
-    RecallLastPTZ(iLastPTZ)
+
+level_event[vdvObject, ZOOM_SPEED_LVL] {
+    zoomSpeed = level.value
+
+    // NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+    //             "'VISCA_ZOOM_SPEED_CHANGE<', itoa(iD), '>ZOOM_SPEED<', itoa(zoomSpeed), '>'")
+
+    if (lastPTZ) {
+        RecallLastPTZ(lastPTZ)
     }
 }
+
 
 timeline_event[TL_DRIVE] { Drive(); }
 
+
 timeline_event[TL_NAV_FEEDBACK] {
-    [vdvObject,POWER_FB]    = (iActualPower == ACTUAL_POWER_ON)
-    [vdvObject,DEVICE_COMMUNICATING] = (iCommunicating)
+    [vdvObject, POWER_FB]    = (actualPower == ACTUAL_POWER_ON)
+    [vdvObject, DEVICE_COMMUNICATING] = (module.Device.IsCommunicating)
 }
 
 
@@ -461,4 +603,3 @@ timeline_event[TL_NAV_FEEDBACK] {
 (*                     END OF PROGRAM                      *)
 (*        DO NOT PUT ANY CODE BELOW THIS COMMENT           *)
 (***********************************************************)
-
