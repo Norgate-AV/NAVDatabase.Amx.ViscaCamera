@@ -100,10 +100,12 @@ DEFINE_MUTUALLY_EXCLUSIVE
 (* EXAMPLE: DEFINE_FUNCTION <RETURN_TYPE> <NAME> (<PARAMETERS>) *)
 (* EXAMPLE: DEFINE_CALL '<NAME>' (<PARAMETERS>) *)
 define_function SendStringRaw(char payload[]) {
-    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
-                NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_TO,
-                                            dvPort,
-                                            payload))
+    if (dvPort.NUMBER == 0) {
+        NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                    NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_TO,
+                                                dvPort,
+                                                payload))
+    }
 
     send_string dvPort, "payload"
 }
@@ -201,10 +203,12 @@ define_function SendObjectInitRequest(integer id) {
 define_function NAVStringGatherCallback(_NAVStringGatherResult args) {
     stack_var char lastMessage[255]
 
-    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
-                NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_PARSING_STRING_FROM,
-                                            dvPort,
-                                            args.Data))
+    if (dvPort.NUMBER == 0) {
+        NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                    NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_PARSING_STRING_FROM,
+                                                dvPort,
+                                                args.Data))
+    }
 
     args.Data = NAVStripCharsFromRight(args.Data, length_array(args.Delimiter))
 
@@ -213,9 +217,6 @@ define_function NAVStringGatherCallback(_NAVStringGatherResult args) {
     select {
         active (NAVContains(lastMessage, 'HEARTBEAT')): {
             module.Device.IsCommunicating = true
-
-            NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'mViscaCameraComm => Received heartbeat response from device'")
-
             InitializeObjects()
         }
         active (true): {
@@ -255,8 +256,6 @@ define_function SendHeartbeat() {
     if (NAVDevicePriorityQueueHasItems(priorityQueue) || priorityQueue.Busy) {
         return
     }
-
-    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'mViscaCameraComm => Enqueuing heartbeat command to device'")
 
     NAVDevicePriorityQueueEnqueue(priorityQueue,
                                     "'POLL_MSG-<HEARTBEAT|', $81, $09, $04, $00, '>'",
@@ -383,10 +382,12 @@ data_event[dvPort] {
         }
     }
     string: {
-        NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
-                    NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_FROM,
-                                                data.device,
-                                                data.text))
+        if (data.device.number == 0) {
+            NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                        NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_FROM,
+                                                    data.device,
+                                                    data.text))
+        }
 
         Process(module.RxBuffer)
     }
@@ -421,11 +422,6 @@ data_event[vdvObject] {
     command: {
         stack_var _NAVSnapiMessage message
 
-        NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
-                    NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_COMMAND_FROM,
-                                                data.device,
-                                                data.text))
-
         NAVParseSnapiMessage(data.text, message)
 
         switch (message.Header) {
@@ -448,11 +444,6 @@ data_event[vdvCommObjects] {
     command: {
         stack_var _NAVSnapiMessage message
         stack_var integer index
-
-        NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
-                    NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_COMMAND_FROM,
-                                                data.device,
-                                                data.text))
 
         NAVParseSnapiMessage(data.text, message)
         index = get_last(vdvCommObjects)
