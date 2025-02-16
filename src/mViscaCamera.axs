@@ -540,8 +540,8 @@ channel_event[vdvObject, 0] {
 level_event[vdvObject, TILT_SPEED_LVL] {
     tiltSpeed = level.value
 
-    // NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
-    //             "'VISCA_TILT_SPEED_CHANGE<', itoa(iD), '>TILT_SPEED<', itoa(tiltSpeed), '>'")
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                "'mViscaCamera => Tilt Speed: ', itoa(tiltSpeed)")
 
     if (lastPTZ) {
         RecallLastPTZ(lastPTZ)
@@ -552,8 +552,8 @@ level_event[vdvObject, TILT_SPEED_LVL] {
 level_event[vdvObject, PAN_SPEED_LVL] {
     panSpeed = level.value
 
-    // NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
-    //             "'VISCA_PAN_SPEED_CHANGE<', itoa(iD), '>PAN_SPEED<', itoa(panSpeed), '>'")
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                "'mViscaCamera => Pan Speed: ', itoa(panSpeed)")
 
     if (lastPTZ) {
         RecallLastPTZ(lastPTZ)
@@ -564,8 +564,8 @@ level_event[vdvObject, PAN_SPEED_LVL] {
 level_event[vdvObject, ZOOM_SPEED_LVL] {
     zoomSpeed = level.value
 
-    // NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
-    //             "'VISCA_ZOOM_SPEED_CHANGE<', itoa(iD), '>ZOOM_SPEED<', itoa(zoomSpeed), '>'")
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                "'mViscaCamera => Zoom Speed: ', itoa(zoomSpeed)")
 
     if (lastPTZ) {
         RecallLastPTZ(lastPTZ)
