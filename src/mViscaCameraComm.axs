@@ -60,6 +60,9 @@ DEFINE_CONSTANT
 constant long TL_SOCKET_CHECK = 1
 constant long TL_HEARTBEAT    = 2
 
+constant long TL_SOCKET_CHECK_INTERVAL[] = { 3000 }
+constant long TL_HEARTBEAT_INTERVAL[]    = { 20000 }
+
 
 (***********************************************************)
 (*              DATA TYPE DEFINITIONS GO BELOW             *)
@@ -71,9 +74,6 @@ DEFINE_TYPE
 (*               VARIABLE DEFINITIONS GO BELOW             *)
 (***********************************************************)
 DEFINE_VARIABLE
-
-volatile long heartbeat[] = { 20000 }
-volatile long socketCheck[] = { 3000 }
 
 volatile _ModuleObject object[MAX_OBJECTS]
 
@@ -269,7 +269,7 @@ define_function NAVModulePropertyEventCallback(_NAVModulePropertyEvent event) {
         case 'IP_ADDRESS': {
             module.Device.SocketConnection.Address = event.Args[1]
             module.Device.SocketConnection.Port = NAV_TELNET_PORT
-            NAVTimelineStart(TL_SOCKET_CHECK, socketCheck, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
+            NAVTimelineStart(TL_SOCKET_CHECK, TL_SOCKET_CHECK_INTERVAL, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
         }
     }
 }
@@ -375,7 +375,7 @@ data_event[dvPort] {
             NAVCommand(data.device, "'HSOFF'")
         }
 
-        NAVTimelineStart(TL_HEARTBEAT, heartbeat, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
+        NAVTimelineStart(TL_HEARTBEAT, TL_HEARTBEAT_INTERVAL, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
 
         if (data.device.number == 0) {
             module.Device.SocketConnection.IsConnected = true
