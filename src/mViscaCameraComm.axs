@@ -267,7 +267,7 @@ define_function SendHeartbeat() {
 define_function NAVModulePropertyEventCallback(_NAVModulePropertyEvent event) {
     switch (upper_string(event.Name)) {
         case 'IP_ADDRESS': {
-            module.Device.SocketConnection.Address = event.Args[1]
+            module.Device.SocketConnection.Address = NAVTrimString(event.Args[1])
             module.Device.SocketConnection.Port = NAV_TELNET_PORT
             NAVTimelineStart(TL_SOCKET_CHECK, TL_SOCKET_CHECK_INTERVAL, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
         }
