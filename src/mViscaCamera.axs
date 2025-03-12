@@ -10,6 +10,8 @@ MODULE_NAME='mViscaCamera'      (
 #include 'NAVFoundation.ModuleBase.axi'
 #include 'NAVFoundation.ArrayUtils.axi'
 #include 'NAVFoundation.InterModuleApi.axi'
+#include 'NAVFoundation.TimelineUtils.axi'
+#include 'NAVFoundation.ErrorLogUtils.axi'
 #include 'LibVisca.axi'
 
 /*
@@ -80,7 +82,7 @@ DEFINE_VARIABLE
 
 volatile integer loop
 
-volatile integer commandLockOut
+volatile char commandLockOut
 
 volatile integer requiredPower
 volatile integer actualPower
@@ -95,8 +97,8 @@ volatile integer lastPTZ
 
 volatile _ViscaObject object
 
-volatile integer registerReady
-volatile integer registerRequested
+volatile char registerReady
+volatile char registerRequested
 
 (***********************************************************)
 (*               LATCHING DEFINITIONS GO BELOW             *)
@@ -194,10 +196,12 @@ define_function NAVStringGatherCallback(_NAVStringGatherResult args) {
                                 if (!module.Device.IsInitialized) {
                                     module.Device.IsInitialized = true
                                     NAVInterModuleApiSendObjectMessage(vdvCommObject,
-                                                        NAVInterModuleApiBuildObjectMessage(OBJECT_INIT_DONE_MESSAGE_HEADER,
-                                                                            object.Api.Id,
-                                                                            ''))
+                                        NAVInterModuleApiBuildObjectMessage(OBJECT_INIT_DONE_MESSAGE_HEADER,
+                                            object.Api.Id,
+                                            ''))
                                 }
+
+                                UpdateFeedback()
                             }
                             case GET_PAN: {
                                 pollSequence = GET_POWER
@@ -216,7 +220,10 @@ define_function NAVStringGatherCallback(_NAVStringGatherResult args) {
 
 
 define_function StartPolling(_ViscaObject object) {
-    NAVTimelineStart(TL_DRIVE, TL_DRIVE_INTERVAL, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
+    NAVTimelineStart(TL_DRIVE,
+                    TL_DRIVE_INTERVAL,
+                    TIMELINE_ABSOLUTE,
+                    TIMELINE_REPEAT)
 }
 
 
@@ -253,9 +260,11 @@ define_function CommunicationTimeOut(integer timeOut) {
     cancel_wait 'CommsTimeOut'
 
     module.Device.IsCommunicating = true
+    UpdateFeedback()
 
     wait (timeOut * 10) 'CommsTimeOut' {
         module.Device.IsCommunicating = false
+        UpdateFeedback()
     }
 }
 
@@ -366,6 +375,12 @@ define_function NAVModulePropertyEventCallback(_NAVModulePropertyEvent event) {
     }
 }
 #END_IF
+
+
+define_function UpdateFeedback() {
+    [vdvObject, POWER_FB]    = (actualPower == ACTUAL_POWER_ON)
+    [vdvObject, DEVICE_COMMUNICATING] = (module.Device.IsCommunicating)
+}
 
 
 (***********************************************************)
@@ -574,12 +589,6 @@ level_event[vdvObject, ZOOM_SPEED_LVL] {
 
 
 timeline_event[TL_DRIVE] { Drive(); }
-
-
-timeline_event[TL_NAV_FEEDBACK] {
-    [vdvObject, POWER_FB]    = (actualPower == ACTUAL_POWER_ON)
-    [vdvObject, DEVICE_COMMUNICATING] = (module.Device.IsCommunicating)
-}
 
 
 (***********************************************************)

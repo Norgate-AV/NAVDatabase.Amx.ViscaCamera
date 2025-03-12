@@ -14,6 +14,8 @@ MODULE_NAME='mViscaCameraComm'      (
 #include 'NAVFoundation.SocketUtils.axi'
 #include 'NAVFoundation.DevicePriorityQueue.axi'
 #include 'NAVFoundation.InterModuleApi.axi'
+#include 'NAVFoundation.TimelineUtils.axi'
+#include 'NAVFoundation.ErrorLogUtils.axi'
 #include 'LibVisca.axi'
 
 /*
@@ -77,12 +79,12 @@ DEFINE_VARIABLE
 
 volatile _ModuleObject object[MAX_OBJECTS]
 
-volatile integer initializing
+volatile char initializing
 volatile integer initializingObjectID
 
-volatile integer initialized
+volatile char initialized
 
-volatile integer ready
+volatile char ready
 
 (***********************************************************)
 (*               LATCHING DEFINITIONS GO BELOW             *)
@@ -99,6 +101,7 @@ DEFINE_MUTUALLY_EXCLUSIVE
 (***********************************************************)
 (* EXAMPLE: DEFINE_FUNCTION <RETURN_TYPE> <NAME> (<PARAMETERS>) *)
 (* EXAMPLE: DEFINE_CALL '<NAME>' (<PARAMETERS>) *)
+
 define_function SendStringRaw(char payload[]) {
     if (dvPort.NUMBER == 0) {
         NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
@@ -152,6 +155,7 @@ define_function InitializeObjects() {
         if (x == length_array(vdvCommObjects) && !initializing) {
             initializingObjectID = x
             module.Device.IsInitialized = true
+            UpdateFeedback()
         }
     }
 }
@@ -160,6 +164,7 @@ define_function InitializeObjects() {
 #IF_DEFINED USING_NAV_DEVICE_PRIORITY_QUEUE_FAILED_RESPONSE_EVENT_CALLBACK
 define_function NAVDevicePriorityQueueFailedResponseEventCallback(_NAVDevicePriorityQueue queue) {
     module.Device.IsCommunicating = false
+    UpdateFeedback()
 }
 #END_IF
 
@@ -174,6 +179,7 @@ define_function ReInitializeObjects() {
     initializing = false
     module.Device.IsInitialized = false
     initializingObjectID = 1
+    UpdateFeedback()
 
     for (x = 1; x <= length_array(object); x++) {
         object[x].IsInitialized = false
@@ -210,13 +216,14 @@ define_function NAVStringGatherCallback(_NAVStringGatherResult args) {
                                                 args.Data))
     }
 
-    args.Data = NAVStripCharsFromRight(args.Data, length_array(args.Delimiter))
+    args.Data = NAVStripRight(args.Data, length_array(args.Delimiter))
 
     lastMessage = NAVDevicePriorityQueueGetLastMessage(priorityQueue)
 
     select {
         active (NAVContains(lastMessage, 'HEARTBEAT')): {
             module.Device.IsCommunicating = true
+            UpdateFeedback()
             InitializeObjects()
         }
         active (true): {
@@ -269,7 +276,10 @@ define_function NAVModulePropertyEventCallback(_NAVModulePropertyEvent event) {
         case 'IP_ADDRESS': {
             module.Device.SocketConnection.Address = NAVTrimString(event.Args[1])
             module.Device.SocketConnection.Port = NAV_TELNET_PORT
-            NAVTimelineStart(TL_SOCKET_CHECK, TL_SOCKET_CHECK_INTERVAL, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
+            NAVTimelineStart(TL_SOCKET_CHECK,
+                            TL_SOCKET_CHECK_INTERVAL,
+                            TIMELINE_ABSOLUTE,
+                            TIMELINE_REPEAT)
         }
     }
 }
@@ -351,6 +361,15 @@ define_function ObjectResponseOk(tdata data) {
 }
 
 
+define_function UpdateFeedback() {
+    [vdvObject, DATA_INITIALIZED] = (initialized)
+
+    [vdvObject, NAV_IP_CONNECTED]	= (module.Device.SocketConnection.IsConnected &&
+                                        module.Device.SocketConnection.IsAuthenticated)
+    [vdvObject, DEVICE_COMMUNICATING] = (module.Device.IsCommunicating)
+    [vdvObject, DATA_INITIALIZED] = (module.Device.IsInitialized)
+}
+
 
 (***********************************************************)
 (*                STARTUP CODE GOES BELOW                  *)
@@ -375,10 +394,14 @@ data_event[dvPort] {
             NAVCommand(data.device, "'HSOFF'")
         }
 
-        NAVTimelineStart(TL_HEARTBEAT, TL_HEARTBEAT_INTERVAL, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
+        NAVTimelineStart(TL_HEARTBEAT,
+                        TL_HEARTBEAT_INTERVAL,
+                        TIMELINE_ABSOLUTE,
+                        TIMELINE_REPEAT)
 
         if (data.device.number == 0) {
             module.Device.SocketConnection.IsConnected = true
+            UpdateFeedback()
         }
     }
     string: {
@@ -398,6 +421,7 @@ data_event[dvPort] {
             module.Device.SocketConnection.IsConnected = false
             module.Device.SocketConnection.IsAuthenticated = false
             module.Device.IsCommunicating = false
+            UpdateFeedback()
 
             NAVTimelineStop(TL_HEARTBEAT)
         }
@@ -407,6 +431,7 @@ data_event[dvPort] {
             module.Device.SocketConnection.IsConnected = false
             module.Device.SocketConnection.IsAuthenticated = false
             module.Device.IsCommunicating = false
+            UpdateFeedback()
         }
 
         NAVErrorLog(NAV_LOG_LEVEL_ERROR,
@@ -479,18 +504,7 @@ timeline_event[TL_SOCKET_CHECK] {
 }
 
 
-timeline_event[TL_NAV_FEEDBACK] {
-    [vdvObject, DATA_INITIALIZED] = (initialized)
-
-    [vdvObject, NAV_IP_CONNECTED]	= (module.Device.SocketConnection.IsConnected &&
-                                        module.Device.SocketConnection.IsAuthenticated)
-    [vdvObject, DEVICE_COMMUNICATING] = (module.Device.IsCommunicating)
-    [vdvObject, DATA_INITIALIZED] = (module.Device.IsInitialized)
-}
-
-
 (***********************************************************)
 (*                     END OF PROGRAM                      *)
 (*        DO NOT PUT ANY CODE BELOW THIS COMMENT           *)
 (***********************************************************)
-

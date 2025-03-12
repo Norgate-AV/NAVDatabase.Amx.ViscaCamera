@@ -1,7 +1,7 @@
 PROGRAM_NAME='LibVisca'
 
 (***********************************************************)
-#include 'NAVFoundation.Core.axi'
+#include 'NAVFoundation.Core.h.axi'
 
 /*
  _   _                       _          ___     __
