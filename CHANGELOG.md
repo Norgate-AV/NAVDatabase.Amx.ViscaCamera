@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.0](https://github.com/Norgate-AV/NAVDatabase.Amx.ViscaCamera/compare/v1.2.0...v1.3.0) (2025-03-12)
+
+### 🌟 Features
+
+- update to support NAVFoundation.Amx v2.0.0 ([25e8f92](https://github.com/Norgate-AV/NAVDatabase.Amx.ViscaCamera/commit/25e8f9284afd1707cb1f5e404207eb306242012f))
+
 ## [1.2.0](https://github.com/Norgate-AV/NAVDatabase.Amx.ViscaCamera/compare/v1.1.0...v1.2.0) (2025-02-18)
 
 ### 🌟 Features
